@@ -5,7 +5,7 @@
 # Pure bash. No fzf, gum, dialog or whiptail required — only pacman + coreutils.
 # Arrow keys / j,k to move · space to toggle · a to (de)select all · enter to run · q to quit.
 #
-# https://github.com/<your-name>/archsweep
+# https://github.com/talhacaglar/archsweep
 # License: MIT
 
 set -uo pipefail

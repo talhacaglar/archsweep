@@ -20,19 +20,56 @@ Everything is **opt-in**: nothing runs until you select it and confirm. The
 cache tasks keep the most recent versions by default, so package rollback still
 works.
 
-## Usage
+## Requirements
+
+- An Arch-based distro (Arch, CachyOS, EndeavourOS, Manjaro, …) — anything with `pacman`.
+- `bash` and coreutils (already present on every Arch system).
+- Optional: `pacman-contrib` for the two pacman-cache tasks (`paccache`). If it
+  is missing those tasks are skipped and everything else still works:
+  ```bash
+  sudo pacman -S --needed pacman-contrib
+  ```
+
+## Installation
+
+### Option 1 — clone and run
 
 ```bash
-git clone https://github.com/<your-name>/archsweep.git
+git clone https://github.com/talhacaglar/archsweep.git
 cd archsweep
+chmod +x archsweep      # only needed if the executable bit was lost
 ./archsweep
 ```
 
-Or install it on your `PATH`:
+### Option 2 — install on your `PATH` (run it from anywhere)
 
 ```bash
-install -Dm755 archsweep ~/.local/bin/archsweep
-archsweep
+git clone https://github.com/talhacaglar/archsweep.git
+install -Dm755 archsweep/archsweep ~/.local/bin/archsweep
+archsweep                # make sure ~/.local/bin is on your $PATH
+```
+
+If `~/.local/bin` is not on your `PATH`, add this to `~/.bashrc` (or
+`~/.config/fish/config.fish` for fish):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Option 3 — one-liner (download just the script)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/talhacaglar/archsweep/main/archsweep \
+  -o ~/.local/bin/archsweep && chmod +x ~/.local/bin/archsweep
+```
+
+## Usage
+
+Run it and you get an interactive picker — move with the arrow keys, toggle
+tasks with `space`, then press `enter`. Nothing is deleted until you confirm.
+
+```bash
+archsweep        # or ./archsweep if not installed on PATH
 ```
 
 ### Keys
