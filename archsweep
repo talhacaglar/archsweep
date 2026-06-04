@@ -19,9 +19,11 @@ JOURNAL_KEEP="${ARCHSWEEP_JOURNAL_KEEP:-2weeks}"
 # ----------------------------- colors / tty ---------------------------------
 if [[ -t 1 ]]; then
   BOLD=$'\e[1m'; DIM=$'\e[2m'; RESET=$'\e[0m'
-  CYAN=$'\e[36m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'; REV=$'\e[7m'
+  CYAN=$'\e[36m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'
+  MAGENTA=$'\e[35m'; BLUE=$'\e[34m'; GREY=$'\e[90m'; REV=$'\e[7m'
 else
-  BOLD=""; DIM=""; RESET=""; CYAN=""; GREEN=""; YELLOW=""; RED=""; REV=""
+  BOLD=""; DIM=""; RESET=""; CYAN=""; GREEN=""; YELLOW=""; RED=""
+  MAGENTA=""; BLUE=""; GREY=""; REV=""
 fi
 
 die()  { printf '%serror:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
@@ -96,11 +98,18 @@ run__journal() {
 # Registry (order = menu order).
 IDS=(orphans cache_old cache_uninstalled aur_cache journal)
 declare -A LABEL=(
-  [orphans]="Remove orphan packages (-Qdtq → -Rns)"
-  [cache_old]="Trim pacman cache, keep last $KEEP_VERSIONS"
-  [cache_uninstalled]="Drop cache of uninstalled packages"
-  [aur_cache]="Clean AUR helper cache${AUR_HELPER:+ ($AUR_HELPER)}"
-  [journal]="Vacuum systemd journal (keep $JOURNAL_KEEP)"
+  [orphans]="Orphan packages"
+  [cache_old]="Pacman cache (keep $KEEP_VERSIONS)"
+  [cache_uninstalled]="Cache of removed packages"
+  [aur_cache]="AUR helper cache${AUR_HELPER:+ ($AUR_HELPER)}"
+  [journal]="Systemd journal (keep $JOURNAL_KEEP)"
+)
+declare -A DESC=(
+  [orphans]="Installed as deps, now needed by nothing  ·  pacman -Rns"
+  [cache_old]="Older versions in /var/cache/pacman/pkg  ·  paccache -rk$KEEP_VERSIONS"
+  [cache_uninstalled]="Packages you no longer have installed  ·  paccache -ruk0"
+  [aur_cache]="Build files and git clones from your AUR helper  ·  -Sc"
+  [journal]="Logs older than the retention window  ·  journalctl --vacuum-time"
 )
 
 N=${#IDS[@]}
@@ -118,18 +127,47 @@ measure_all() {
   for ((i=0; i<N; i++)); do MEASURE[i]="$("measure__${IDS[i]}")"; done
 }
 
+# Repeat a string n times (for borders/rules).
+repeat() { local n=$1 s=$2 out=""; while (( n-- > 0 )); do out+="$s"; done; printf '%s' "$out"; }
+
+# Color a measured value: green when it's a real size/count, dim otherwise.
+paint_size() {
+  if [[ "$1" =~ ^[0-9] ]]; then printf '%s%s%s' "$GREEN" "$1" "$RESET"
+  else printf '%s%s%s' "$GREY" "$1" "$RESET"; fi
+}
+
+# Centered, rounded title box sized to its text.
+banner() {
+  local plain="  archsweep  ·  tidy your Arch system  "
+  local disp="  ${BOLD}${MAGENTA}archsweep${RESET}  ${DIM}·${RESET}  ${DIM}tidy your Arch system${RESET}  "
+  local w=${#plain}
+  printf '  %s╭%s╮%s\n'  "$CYAN" "$(repeat "$w" ─)" "$RESET"
+  printf '  %s│%s%s%s│%s\n' "$CYAN" "$RESET" "$disp" "$CYAN" "$RESET"
+  printf '  %s╰%s╯%s\n'  "$CYAN" "$(repeat "$w" ─)" "$RESET"
+}
+
 draw() {
   printf '\e[H\e[2J'   # home + clear
-  printf '%s archsweep %s%s Arch cleanup%s\n\n' "$REV$BOLD" "$RESET" "$DIM" "$RESET"
+  printf '\n'; banner; printf '\n'
+  local sel=0
   for ((i=0; i<N; i++)); do
-    local box="[ ]"; (( SELECTED[i] )) && box="[${GREEN}x${RESET}]"
-    local pointer="   "; local line_bold=""
-    if (( i == CUR )); then pointer=" ${CYAN}❯${RESET} "; line_bold="$BOLD"; fi
-    printf '%s%s %s%-38s%s %s%s%s\n' \
-      "$pointer" "$box" "$line_bold" "${LABEL[${IDS[i]}]}" "$RESET" \
-      "$DIM" "${MEASURE[i]:-…}" "$RESET"
+    (( SELECTED[i] )) && (( sel++ ))
+    local bar=" " cb lstart="$RESET"
+    if (( SELECTED[i] )); then cb="${GREEN}◉${RESET}"; else cb="${GREY}○${RESET}"; fi
+    if (( i == CUR )); then bar="${CYAN}${BOLD}▌${RESET}"; lstart="$BOLD"; fi
+    # Right-align the size by padding on its plain length (color codes don't count).
+    local m="${MEASURE[i]:-…}"
+    local pad=$(( 12 - ${#m} )); (( pad < 0 )) && pad=0
+    printf '  %s %s  %s%-30s%s%*s%s\n' \
+      "$bar" "$cb" "$lstart" "${LABEL[${IDS[i]}]}" "$RESET" "$pad" "" "$(paint_size "$m")"
   done
-  printf '\n%s ↑/↓ move · space toggle · a all · enter run · q quit%s\n' "$DIM" "$RESET"
+  # Contextual one-line description of the highlighted task.
+  printf '\n   %s%s%s\n' "$DIM" "${DESC[${IDS[CUR]}]}" "$RESET"
+  # Footer.
+  printf '  %s%s%s\n' "$GREY" "$(repeat 44 ─)" "$RESET"
+  printf '  %s%s↑↓%s move   %sspace%s pick   %sa%s all   %s⏎%s run   %sq%s quit   %s· %d selected%s\n' \
+    "" "$BOLD$CYAN" "$RESET" "$BOLD$CYAN" "$RESET" "$BOLD$CYAN" "$RESET" \
+    "$BOLD$GREEN" "$RESET" "$BOLD$RED" "$RESET" "$DIM" "$sel" "$RESET"
 }
 
 read_key() {
@@ -168,11 +206,12 @@ if (( ${#chosen[@]} == 0 )); then echo "Nothing selected. Bye."; exit 0; fi
 
 before=$(df --output=avail -BM / 2>/dev/null | tail -1 | tr -dc '0-9')
 
-echo "${BOLD}Will run:${RESET}"
-for id in "${chosen[@]}"; do printf '  • %s\n' "${LABEL[$id]}"; done
-printf '\n%sProceed?%s [y/N] ' "$YELLOW" "$RESET"
+printf '\n'; banner; printf '\n'
+printf '  %sThe following tasks will run:%s\n\n' "$BOLD" "$RESET"
+for id in "${chosen[@]}"; do printf '    %s•%s %s\n' "$CYAN" "$RESET" "${LABEL[$id]}"; done
+printf '\n  %s%sProceed?%s %s[y/N]%s ' "$BOLD" "$YELLOW" "$RESET" "$DIM" "$RESET"
 read -r ans
-[[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+[[ "$ans" =~ ^[Yy]$ ]] || { printf '  %sAborted.%s\n' "$DIM" "$RESET"; exit 0; }
 
 # Cache sudo credentials up front (only if a privileged task is selected).
 for id in "${chosen[@]}"; do
@@ -182,14 +221,19 @@ done
 echo
 for id in "${chosen[@]}"; do
   info "${LABEL[$id]}"
-  "run__$id" || printf '%s  (task reported an error, continuing)%s\n' "$YELLOW" "$RESET"
+  if "run__$id"; then
+    printf '  %s✓%s done\n\n' "$GREEN" "$RESET"
+  else
+    printf '  %s✗ task reported an error, continuing%s\n\n' "$YELLOW" "$RESET"
+  fi
 done
 
 after=$(df --output=avail -BM / 2>/dev/null | tail -1 | tr -dc '0-9')
+printf '  %s%s%s\n' "$GREY" "$(repeat 44 ─)" "$RESET"
 if [[ -n "${before:-}" && -n "${after:-}" ]]; then
-  freed=$(( after - before ))
-  (( freed < 0 )) && freed=0
-  printf '\n%sDone.%s Freed ~%s MiB on /.\n' "$GREEN" "$RESET" "$freed"
+  freed=$(( after - before )); (( freed < 0 )) && freed=0
+  printf '  %s%s✓ All done.%s  Freed %s~%s MiB%s on /\n' \
+    "$BOLD" "$GREEN" "$RESET" "$BOLD" "$freed" "$RESET"
 else
-  printf '\n%sDone.%s\n' "$GREEN" "$RESET"
+  printf '  %s%s✓ All done.%s\n' "$BOLD" "$GREEN" "$RESET"
 fi
