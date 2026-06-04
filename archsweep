@@ -21,9 +21,10 @@ if [[ -t 1 ]]; then
   BOLD=$'\e[1m'; DIM=$'\e[2m'; RESET=$'\e[0m'
   CYAN=$'\e[36m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'
   MAGENTA=$'\e[35m'; BLUE=$'\e[34m'; GREY=$'\e[90m'; REV=$'\e[7m'
+  BORDER=$'\e[38;5;73m'; HLBG=$'\e[48;5;238m'
 else
   BOLD=""; DIM=""; RESET=""; CYAN=""; GREEN=""; YELLOW=""; RED=""
-  MAGENTA=""; BLUE=""; GREY=""; REV=""
+  MAGENTA=""; BLUE=""; GREY=""; REV=""; BORDER=""; HLBG=""
 fi
 
 die()  { printf '%serror:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
@@ -105,11 +106,22 @@ declare -A LABEL=(
   [journal]="Systemd journal (keep $JOURNAL_KEEP)"
 )
 declare -A DESC=(
-  [orphans]="Installed as deps, now needed by nothing  ·  pacman -Rns"
-  [cache_old]="Older versions in /var/cache/pacman/pkg  ·  paccache -rk$KEEP_VERSIONS"
-  [cache_uninstalled]="Packages you no longer have installed  ·  paccache -ruk0"
-  [aur_cache]="Build files and git clones from your AUR helper  ·  -Sc"
-  [journal]="Logs older than the retention window  ·  journalctl --vacuum-time"
+  [orphans]="Installed as dependencies, now required by nothing"
+  [cache_old]="Older package versions in /var/cache/pacman/pkg"
+  [cache_uninstalled]="Cached packages you no longer have installed"
+  [aur_cache]="Build files and git clones from your AUR helper"
+  [journal]="systemd logs older than the retention window"
+)
+declare -A CMD=(
+  [orphans]="pacman -Qdtq | pacman -Rns -"
+  [cache_old]="paccache -rk$KEEP_VERSIONS"
+  [cache_uninstalled]="paccache -ruk0"
+  [aur_cache]="${AUR_HELPER:-paru} -Sc"
+  [journal]="journalctl --vacuum-time=$JOURNAL_KEEP"
+)
+declare -A ROOT=(
+  [orphans]="yes" [cache_old]="yes" [cache_uninstalled]="yes"
+  [aur_cache]="no" [journal]="yes"
 )
 
 N=${#IDS[@]}
@@ -130,44 +142,84 @@ measure_all() {
 # Repeat a string n times (for borders/rules).
 repeat() { local n=$1 s=$2 out=""; while (( n-- > 0 )); do out+="$s"; done; printf '%s' "$out"; }
 
-# Color a measured value: green when it's a real size/count, dim otherwise.
-paint_size() {
-  if [[ "$1" =~ ^[0-9] ]]; then printf '%s%s%s' "$GREEN" "$1" "$RESET"
-  else printf '%s%s%s' "$GREY" "$1" "$RESET"; fi
-}
+# ---- panel geometry ----
+W=66            # inner width of every panel (between the borders)
+NW=30           # "Task" column width
+RW=12           # "Reclaims" column width
+RTW=5           # "Root" column width
 
-# Centered, rounded title box sized to its text.
-banner() {
-  local plain="  archsweep  ·  tidy your Arch system  "
-  local disp="  ${BOLD}${MAGENTA}archsweep${RESET}  ${DIM}·${RESET}  ${DIM}tidy your Arch system${RESET}  "
-  local w=${#plain}
-  printf '  %s╭%s╮%s\n'  "$CYAN" "$(repeat "$w" ─)" "$RESET"
-  printf '  %s│%s%s%s│%s\n' "$CYAN" "$RESET" "$disp" "$CYAN" "$RESET"
-  printf '  %s╰%s╯%s\n'  "$CYAN" "$(repeat "$w" ─)" "$RESET"
+# Rounded panel top with its title embedded in the border, like a TUI window.
+box_top() {     # $1 = title
+  local t=" $1 " fill
+  fill=$(( W - 1 - ${#t} )); (( fill < 0 )) && fill=0
+  printf '  %s╭─%s%s%s%s╮%s\n' \
+    "$BORDER" "$BOLD$CYAN" "$t" "$RESET$BORDER" "$(repeat "$fill" ─)" "$RESET"
+}
+box_bottom() { printf '  %s╰%s╯%s\n' "$BORDER" "$(repeat "$W" ─)" "$RESET"; }
+
+# A content line padded to the panel width. $2 = visible length of $1 (sans color).
+box_row() {
+  local pad=$(( W - $2 )); (( pad < 0 )) && pad=0
+  printf '  %s│%s%s%*s%s│%s\n' "$BORDER" "$RESET" "$1" "$pad" "" "$BORDER" "$RESET"
+}
+# A full-width highlighted row (background fills the whole line). $1 = plain text.
+box_row_hl() {
+  local pad=$(( W - ${#1} )); (( pad < 0 )) && pad=0
+  printf '  %s│%s%s%s%*s%s%s│%s\n' \
+    "$BORDER" "$RESET" "$HLBG$BOLD" "$1" "$pad" "" "$RESET" "$BORDER" "$RESET"
+}
+# A "label   value" line for the detail panel.
+detail_row() { # $1 label  $2 value  [$3 value-color]
+  local labp; printf -v labp '  %-9s ' "$1"
+  box_row "${DIM}${labp}${RESET}${3:-}$2${RESET}" "$(( ${#labp} + ${#2} ))"
 }
 
 draw() {
-  printf '\e[H\e[2J'   # home + clear
-  printf '\n'; banner; printf '\n'
-  local sel=0
+  printf '\e[H\e[2J\n'   # home + clear
+
+  # ---- main panel: the task table ----
+  box_top "Cleanup Tasks"
+  local hdr
+  printf -v hdr '   %-*s %-*s %-*s' "$NW" "Task" "$RW" "Reclaims" "$RTW" "Root"
+  box_row "${DIM}${hdr}${RESET}" "${#hdr}"
+  box_row "" 0
+  local sel=0 i
   for ((i=0; i<N; i++)); do
     (( SELECTED[i] )) && (( sel++ ))
-    local bar=" " cb lstart="$RESET"
-    if (( SELECTED[i] )); then cb="${GREEN}◉${RESET}"; else cb="${GREY}○${RESET}"; fi
-    if (( i == CUR )); then bar="${CYAN}${BOLD}▌${RESET}"; lstart="$BOLD"; fi
-    # Right-align the size by padding on its plain length (color codes don't count).
-    local m="${MEASURE[i]:-…}"
-    local pad=$(( 12 - ${#m} )); (( pad < 0 )) && pad=0
-    printf '  %s %s  %s%-30s%s%*s%s\n' \
-      "$bar" "$cb" "$lstart" "${LABEL[${IDS[i]}]}" "$RESET" "$pad" "" "$(paint_size "$m")"
+    local name="${LABEL[${IDS[i]}]}" m="${MEASURE[i]:-…}" rt="${ROOT[${IDS[i]}]}"
+    if (( i == CUR )); then
+      local mark; (( SELECTED[i] )) && mark="◉" || mark="○"
+      local plain; printf -v plain ' %s %-*s %-*s %-*s' "$mark" "$NW" "$name" "$RW" "$m" "$RTW" "$rt"
+      box_row_hl "$plain"
+    else
+      local cb scol="$GREY" namep sizep rtp
+      (( SELECTED[i] )) && cb="${GREEN}◉${RESET}" || cb="${GREY}○${RESET}"
+      [[ "$m" =~ ^[0-9] ]] && scol="$GREEN"
+      printf -v namep '%-*s' "$NW" "$name"
+      printf -v sizep '%-*s' "$RW" "$m"
+      printf -v rtp   '%-*s' "$RTW" "$rt"
+      box_row " ${cb} ${namep} ${scol}${sizep}${RESET} ${DIM}${rtp}${RESET}" \
+        "$(( 3 + NW + 1 + RW + 1 + RTW ))"
+    fi
   done
-  # Contextual one-line description of the highlighted task.
-  printf '\n   %s%s%s\n' "$DIM" "${DESC[${IDS[CUR]}]}" "$RESET"
-  # Footer.
-  printf '  %s%s%s\n' "$GREY" "$(repeat 44 ─)" "$RESET"
-  printf '  %s%s↑↓%s move   %sspace%s pick   %sa%s all   %s⏎%s run   %sq%s quit   %s· %d selected%s\n' \
-    "" "$BOLD$CYAN" "$RESET" "$BOLD$CYAN" "$RESET" "$BOLD$CYAN" "$RESET" \
-    "$BOLD$GREEN" "$RESET" "$BOLD$RED" "$RESET" "$DIM" "$sel" "$RESET"
+  box_bottom
+
+  # ---- detail panel: what the highlighted task does ----
+  printf '\n'
+  box_top "Selected"
+  local id="${IDS[CUR]}"
+  detail_row "Task"    "${LABEL[$id]}" "$BOLD$MAGENTA"
+  detail_row "Does"    "${DESC[$id]}"
+  detail_row "Command" "${CMD[$id]}"   "$CYAN"
+  box_bottom
+
+  # ---- footer keybindings ----
+  printf '\n  %s⏎%s run   %s│%s   %sspace%s toggle   %s│%s   %sa%s all   %s│%s   %s↑↓ k j%s move   %s│%s   %sq%s quit   %s(%d selected)%s\n' \
+    "$BOLD$GREEN" "$RESET" "$GREY" "$RESET" \
+    "$BOLD$CYAN" "$RESET" "$GREY" "$RESET" \
+    "$BOLD$CYAN" "$RESET" "$GREY" "$RESET" \
+    "$BOLD$CYAN" "$RESET" "$GREY" "$RESET" \
+    "$BOLD$RED" "$RESET" "$DIM" "$sel" "$RESET"
 }
 
 read_key() {
@@ -206,9 +258,14 @@ if (( ${#chosen[@]} == 0 )); then echo "Nothing selected. Bye."; exit 0; fi
 
 before=$(df --output=avail -BM / 2>/dev/null | tail -1 | tr -dc '0-9')
 
-printf '\n'; banner; printf '\n'
-printf '  %sThe following tasks will run:%s\n\n' "$BOLD" "$RESET"
-for id in "${chosen[@]}"; do printf '    %s•%s %s\n' "$CYAN" "$RESET" "${LABEL[$id]}"; done
+printf '\e[H\e[2J\n'
+box_top "Confirm"
+box_row "" 0
+for id in "${chosen[@]}"; do
+  box_row "   ${GREEN}•${RESET} ${LABEL[$id]}" "$(( 5 + ${#LABEL[$id]} ))"
+done
+box_row "" 0
+box_bottom
 printf '\n  %s%sProceed?%s %s[y/N]%s ' "$BOLD" "$YELLOW" "$RESET" "$DIM" "$RESET"
 read -r ans
 [[ "$ans" =~ ^[Yy]$ ]] || { printf '  %sAborted.%s\n' "$DIM" "$RESET"; exit 0; }
