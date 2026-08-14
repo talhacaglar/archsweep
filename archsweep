@@ -84,7 +84,11 @@ measure__aur_cache() {
 run__aur_cache() {
   [[ -z "$AUR_HELPER" ]] && { echo "  no AUR helper found, skipping."; return 0; }
   # AUR helpers refuse to run as root, so this stays unprivileged on purpose.
-  "$AUR_HELPER" -Sc --noconfirm
+  # yay/paru -Sc normally also delegates to pacman -Sc, which re-cleans
+  # /var/cache/pacman/pkg and can emit noisy errors for pacman download-* temp
+  # files. Limit this task to the AUR build cache; pacman cache cleanup is
+  # handled by the dedicated tasks above.
+  "$AUR_HELPER" -Sc --noconfirm --aur
 }
 
 measure__journal() {
