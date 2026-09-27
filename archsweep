@@ -280,17 +280,23 @@ for id in "${chosen[@]}"; do
 done
 
 echo
+failed_tasks=0
 for id in "${chosen[@]}"; do
   info "${LABEL[$id]}"
   if "run__$id"; then
     printf '  %s✓%s done\n\n' "$GREEN" "$RESET"
   else
+    (( failed_tasks++ ))
     printf '  %s✗ task reported an error, continuing%s\n\n' "$YELLOW" "$RESET"
   fi
 done
 
 after=$(df --output=avail -BM / 2>/dev/null | tail -1 | tr -dc '0-9')
 printf '  %s%s%s\n' "$GREY" "$(repeat 44 ─)" "$RESET"
+if (( failed_tasks > 0 )); then
+  printf '  %sCompleted with %d failed task(s).%s\n' "$RED" "$failed_tasks" "$RESET"
+  exit 1
+fi
 if [[ -n "${before:-}" && -n "${after:-}" ]]; then
   freed=$(( after - before )); (( freed < 0 )) && freed=0
   printf '  %s%s✓ All done.%s  Freed %s~%s MiB%s on /\n' \
